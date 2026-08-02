@@ -182,3 +182,24 @@ Find **Protocol Buffers Descriptions** at the [`./protos` directory](/protos).
 - [Google Cloud Next'18 London – Keynote](https://youtu.be/nIq2pkNcfEI?t=3071)
   showing Stackdriver Incident Response Management
 - [Microservices demo showcasing Go Micro](https://github.com/go-micro/demo)
+
+## Update: currencyservice added back
+
+Initial trim excluded `currencyservice`, assuming gRPC calls were lazy/optional.
+Testing revealed the homepage and product pages call it *synchronously* to
+render prices — it's a hard dependency, not an optional feature. Added it
+back (self-contained, no further dependencies of its own). Kept services:
+`frontend`, `productcatalogservice`, `cartservice` (+`redis-cart`), `currencyservice`.
+
+## Update 2: shippingservice added back
+
+Cart page (`viewCartHandler`) calls `shippingservice` synchronously for a
+shipping quote — another hard dependency discovered by running it, not
+optional. Added back (self-contained, no dependencies of its own). Kept
+services now: `frontend`, `productcatalogservice`, `cartservice`
+(+`redis-cart`), `currencyservice`, `shippingservice`.
+
+Still using dummy addresses for: `recommendationservice`, `checkoutservice`,
+`adservice`, `shoppingassistantservice` — these are confirmed to fail
+gracefully (logged as warnings, don't break the page) rather than hard-fail
+like currency/shipping did.

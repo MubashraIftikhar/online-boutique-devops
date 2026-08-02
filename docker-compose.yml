@@ -1,0 +1,77 @@
+services:
+  redis-cart:
+    image: redis:alpine
+    container_name: redis-cart
+    ports:
+      - "6379:6379"
+
+  productcatalogservice:
+    build:
+      context: ./src/productcatalogservice
+      dockerfile: Dockerfile
+    container_name: productcatalogservice
+    ports:
+      - "3550:3550"
+    environment:
+      - PORT=3550
+
+  cartservice:
+    build:
+      context: ./src/cartservice/src
+      dockerfile: Dockerfile
+    container_name: cartservice
+    ports:
+      - "7070:7070"
+    environment:
+      - REDIS_ADDR=redis-cart:6379
+    depends_on:
+      - redis-cart
+
+  currencyservice:
+    build:
+      context: ./src/currencyservice
+      dockerfile: Dockerfile
+    container_name: currencyservice
+    ports:
+      - "7000:7000"
+    environment:
+      - PORT=7000
+      - DISABLE_PROFILER=1
+
+  shippingservice:
+    build:
+      context: ./src/shippingservice
+      dockerfile: Dockerfile
+    container_name: shippingservice
+    ports:
+      - "50051:50051"
+    environment:
+      - PORT=50051
+      - DISABLE_PROFILER=1
+
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - PRODUCT_CATALOG_SERVICE_ADDR=productcatalogservice:3550
+      - CART_SERVICE_ADDR=cartservice:7070
+      - CURRENCY_SERVICE_ADDR=currencyservice:7000
+      - SHIPPING_SERVICE_ADDR=shippingservice:50051
+      # Homepage/product/cart pages confirmed working with just currency +
+      # catalog + cart + shipping. These remaining ones are only hit on
+      # actions we're not exercising yet (checkout, recommendations widget,
+      # ads banner, AI assistant) and fail gracefully when hit.
+      - RECOMMENDATION_SERVICE_ADDR=unused:9999
+      - CHECKOUT_SERVICE_ADDR=unused:9999
+      - AD_SERVICE_ADDR=unused:9999
+      - SHOPPING_ASSISTANT_SERVICE_ADDR=unused:9999
+    depends_on:
+      - productcatalogservice
+      - cartservice
+      - currencyservice
+      - shippingservice
