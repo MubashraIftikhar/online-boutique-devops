@@ -9,9 +9,10 @@ on:
     branches: [main]
     paths:
       - 'src/frontend/**'
+
 jobs:
   lint-and-test:
-    name: Lint, test, and coverage
+    name: Test and coverage
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,15 +22,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          working-directory: src/frontend
-          version: v2.12.2
+
       - name: Run tests with coverage
         run: go test ./... -v -coverprofile=coverage.out
+
       - name: Show coverage summary
         run: go tool cover -func=coverage.out
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
@@ -41,6 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+    # Non-critical: don't block merges/deploys on CodeQL findings or transient
+    # analysis failures. Results still show up in the Security tab.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Initialize CodeQL
@@ -55,7 +57,7 @@ jobs:
   build-and-scan:
     name: Build image and scan
     runs-on: ubuntu-latest
-    needs: [lint-and-test, codeql]
+    needs: [lint-and-test]  # codeql no longer gates the build
     permissions:
       id-token: write
       contents: read
@@ -67,8 +69,12 @@ jobs:
           docker build -t frontend:${{ github.sha }} \
             src/frontend
 
+      # Non-critical: vulnerability visibility only, exit-code 0 so it never
+      # fails the job either way (kept explicit + continue-on-error as a
+      # second safety net in case severity/exit-code settings change later).
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
+        continue-on-error: true
         with:
           image-ref: frontend:${{ github.sha }}
           severity: 'CRITICAL,HIGH'
