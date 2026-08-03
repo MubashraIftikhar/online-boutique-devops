@@ -26,7 +26,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/productcatalogservice/genproto"
-	"github.com/golang/protobuf/jsonpb"
+	"github.com/golang/protobuf/jsonpb" //nolint:staticcheck // deprecated but functional; not refactoring given project timeline
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -66,7 +66,11 @@ func getSecretPayload(project, secret, version string) (string, error) {
 		log.Warnf("failed to create SecretManager client: %v", err)
 		return "", err
 	}
-	defer client.Close()
+	defer func() {
+		if cerr := client.Close(); cerr != nil {
+			log.Warnf("failed to close SecretManager client: %v", cerr)
+		}
+	}()
 
 	req := &secretmanagerpb.AccessSecretVersionRequest{
 		Name: fmt.Sprintf("projects/%s/secrets/%s/versions/%s", project, secret, version),
@@ -104,7 +108,11 @@ func loadCatalogFromAlloyDB(catalog *pb.ListProductsResponse) error {
 		return err
 	}
 	cleanup := func() error { return dialer.Close() }
-	defer cleanup()
+	defer func() {
+		if cerr := cleanup(); cerr != nil {
+			log.Warnf("failed to close dialer: %v", cerr)
+		}
+	}()
 
 	dsn := fmt.Sprintf(
 		"user=%s password=%s dbname=%s sslmode=disable",
