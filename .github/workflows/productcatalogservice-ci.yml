@@ -66,6 +66,9 @@ jobs:
     name: Build image and scan
     runs-on: ubuntu-latest
     needs: [lint-and-test, codeql]
+    permissions:
+      id-token: write      # required for OIDC -> AWS role assumption
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -82,5 +85,24 @@ jobs:
           exit-code: '0'
           format: 'table'
 
-      # Next step once ECR is set up: authenticate to AWS and push this
-      # image to ECR here, tagged with ${{ github.sha }}.
+      - name: Configure AWS credentials
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag and push to ECR
+        if: github.event_name == 'push'
+        run: |
+          docker tag productcatalogservice:${{ github.sha }} \
+            ${{ steps.ecr.outputs.registry }}/productcatalogservice:${{ github.sha }}
+          docker tag productcatalogservice:${{ github.sha }} \
+            ${{ steps.ecr.outputs.registry }}/productcatalogservice:latest
+          docker push ${{ steps.ecr.outputs.registry }}/productcatalogservice:${{ github.sha }}
+          docker push ${{ steps.ecr.outputs.registry }}/productcatalogservice:latest
