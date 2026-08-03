@@ -29,6 +29,8 @@ spec:
     spec:
       serviceAccountName: currencyservice
       terminationGracePeriodSeconds: 5
+      imagePullSecrets:
+      - name: ecr-secret
       securityContext:
         fsGroup: 1000
         runAsGroup: 1000
