@@ -130,8 +130,7 @@ func run(port string) string {
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{}))
-	var srv *grpc.Server
-	srv = grpc.NewServer(
+	srv := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()))
 
 	svc := &productCatalog{}
@@ -143,11 +142,16 @@ func run(port string) string {
 	pb.RegisterProductCatalogServiceServer(srv, svc)
 	healthcheck := health.NewServer()
 	healthpb.RegisterHealthServer(srv, healthcheck)
-	go srv.Serve(listener)
+	go func() {
+		if err := srv.Serve(listener); err != nil {
+			log.Errorf("failed to serve: %v", err)
+		}
+	}()
 
 	return listener.Addr().String()
 }
 
+//nolint:unused // pre-existing stub in upstream code, not exercised by this trimmed service set
 func initStats() {
 	// TODO(drewbr) Implement OpenTelemetry stats
 }
