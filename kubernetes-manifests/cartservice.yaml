@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,6 +28,8 @@ spec:
     spec:
       serviceAccountName: cartservice
       terminationGracePeriodSeconds: 5
+      imagePullSecrets:
+      - name: ecr-secret
       securityContext:
         fsGroup: 1000
         runAsGroup: 1000
@@ -43,7 +44,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: cartservice
+        image: 532404261078.dkr.ecr.us-east-1.amazonaws.com/cartservice:latest
         ports:
         - containerPort: 7070
         env:
