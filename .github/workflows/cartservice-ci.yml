@@ -1,4 +1,5 @@
 name: cartservice CI
+
 on:
   push:
     branches: [main]
@@ -9,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'src/cartservice/**'
+
 jobs:
   lint-and-test:
     name: Build and test
@@ -53,12 +55,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-
       - name: Build Docker image
         run: |
           docker build -t cartservice:${{ github.sha }} \
             src/cartservice/src
-
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
@@ -66,19 +66,16 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
-
       - name: Configure AWS credentials
         if: github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
           aws-region: us-east-1
-
       - name: Login to Amazon ECR
         if: github.event_name == 'push'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-
       - name: Tag and push to ECR
         if: github.event_name == 'push'
         run: |
@@ -88,3 +85,71 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/cartservice:latest
           docker push ${{ steps.ecr.outputs.registry }}/cartservice:${{ github.sha }}
           docker push ${{ steps.ecr.outputs.registry }}/cartservice:latest
+
+  deploy:
+    name: Deploy to k3s
+    needs: build-and-scan
+    if: github.event_name == 'push'
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy new image
+        run: |
+          kubectl set image deployment/cartservice \
+            server=532404261078.dkr.ecr.us-east-1.amazonaws.com/cartservice:${{ github.sha }}
+
+      - name: Wait for rollout to complete
+        id: rollout
+        run: |
+          kubectl rollout status deployment/cartservice --timeout=120s
+
+      - name: Run integration test against live service
+        id: integration_test
+        run: |
+          kubectl create configmap integration-test-proto-${{ github.run_id }} \
+            --from-file=demo.proto=./protos/demo.proto \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          cat <<EOF > integration-test-pod.yaml
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: integration-test-${{ github.run_id }}
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: integration-test
+                image: fullstorydev/grpcurl:latest
+                command: ["grpcurl", "-plaintext", "-proto", "/protos/demo.proto", "cartservice:7070", "hipstershop.CartService/GetCart", "-d", "{\"user_id\":\"ci-smoke-test\"}"]
+                volumeMounts:
+                  - name: proto-vol
+                    mountPath: /protos
+            volumes:
+              - name: proto-vol
+                configMap:
+                  name: integration-test-proto-${{ github.run_id }}
+          EOF
+
+          kubectl apply -f integration-test-pod.yaml
+          kubectl wait --for=condition=Ready pod/integration-test-${{ github.run_id }} --timeout=60s || true
+          kubectl logs -f pod/integration-test-${{ github.run_id }}
+          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+
+          kubectl delete pod integration-test-${{ github.run_id }} --ignore-not-found
+          kubectl delete configmap integration-test-proto-${{ github.run_id }} --ignore-not-found
+
+          exit $EXIT_CODE
+
+      - name: Rollback on failure
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
+        run: |
+          echo "Deployment or integration test failed — rolling back to previous version"
+          kubectl rollout undo deployment/cartservice
+          kubectl rollout status deployment/cartservice --timeout=120s
+
+      - name: Confirm final state
+        if: always()
+        run: |
+          kubectl get pods -l app=cartservice
+          kubectl rollout history deployment/cartservice
