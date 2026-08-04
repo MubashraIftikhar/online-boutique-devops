@@ -1,89 +1,158 @@
-# Copyright 2018 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+name: currencyservice CI
 
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: currencyservice
-  labels:
-    app: currencyservice
-spec:
-  selector:
-    matchLabels:
-      app: currencyservice
-  template:
-    metadata:
-      labels:
-        app: currencyservice
-    spec:
-      serviceAccountName: currencyservice
-      terminationGracePeriodSeconds: 5
-      imagePullSecrets:
-      - name: ecr-secret
-      securityContext:
-        fsGroup: 1000
-        runAsGroup: 1000
-        runAsNonRoot: true
-        runAsUser: 1000
-      containers:
-      - name: server
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-              - ALL
-          privileged: false
-          readOnlyRootFilesystem: true
-        image: 532404261078.dkr.ecr.us-east-1.amazonaws.com/currencyservice:latest
-        ports:
-        - name: grpc
-          containerPort: 7000
-        env:
-        - name: PORT
-          value: "7000"
-        - name: DISABLE_PROFILER
-          value: "1"
-        readinessProbe:
-          grpc:
-            port: 7000
-        livenessProbe:
-          grpc:
-            port: 7000
-        resources:
-          requests:
-            cpu: 100m
-            memory: 64Mi
-          limits:
-            cpu: 200m
-            memory: 128Mi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: currencyservice
-  labels:
-    app: currencyservice
-spec:
-  type: ClusterIP
-  selector:
-    app: currencyservice
-  ports:
-  - name: grpc
-    port: 7000
-    targetPort: 7000
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: currencyservice
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/currencyservice/**'
+      - '.github/workflows/currencyservice-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/currencyservice/**'
+
+jobs:
+  lint-and-test:
+    name: Install and syntax-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/currencyservice
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --only=production
+
+      # No test suite or ESLint config exists upstream for this service
+      # (package.json's "test" script is an unfilled placeholder). Running
+      # a syntax check as a baseline sanity gate instead.
+      - name: Syntax check
+        run: |
+          find . -maxdepth 1 -name "*.js" -exec node --check {} \;
+
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
+  build-and-scan:
+    name: Build image and scan
+    runs-on: ubuntu-latest
+    needs: [lint-and-test, codeql]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          docker build -t currencyservice:${{ github.sha }} \
+            src/currencyservice
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: currencyservice:${{ github.sha }}
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+      - name: Configure AWS credentials
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
+          aws-region: us-east-1
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Tag and push to ECR
+        if: github.event_name == 'push'
+        run: |
+          docker tag currencyservice:${{ github.sha }} \
+            ${{ steps.ecr.outputs.registry }}/currencyservice:${{ github.sha }}
+          docker tag currencyservice:${{ github.sha }} \
+            ${{ steps.ecr.outputs.registry }}/currencyservice:latest
+          docker push ${{ steps.ecr.outputs.registry }}/currencyservice:${{ github.sha }}
+          docker push ${{ steps.ecr.outputs.registry }}/currencyservice:latest
+
+  deploy:
+    name: Deploy to k3s
+    needs: build-and-scan
+    if: github.event_name == 'push'
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy new image
+        run: |
+          kubectl set image deployment/currencyservice \
+            server=532404261078.dkr.ecr.us-east-1.amazonaws.com/currencyservice:${{ github.sha }}
+
+      - name: Wait for rollout to complete
+        id: rollout
+        run: |
+          kubectl rollout status deployment/currencyservice --timeout=120s
+
+      - name: Run integration test against live service
+        id: integration_test
+        run: |
+          kubectl create configmap integration-test-proto-${{ github.run_id }} \
+            --from-file=demo.proto=./protos/demo.proto \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          cat <<EOF > integration-test-pod.yaml
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: integration-test-${{ github.run_id }}
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: integration-test
+                image: fullstorydev/grpcurl:latest
+                command: ["grpcurl", "-plaintext", "-proto", "/protos/demo.proto", "currencyservice:7000", "hipstershop.CurrencyService/GetSupportedCurrencies"]
+                volumeMounts:
+                  - name: proto-vol
+                    mountPath: /protos
+            volumes:
+              - name: proto-vol
+                configMap:
+                  name: integration-test-proto-${{ github.run_id }}
+          EOF
+
+          kubectl apply -f integration-test-pod.yaml
+          kubectl wait --for=condition=Ready pod/integration-test-${{ github.run_id }} --timeout=60s || true
+          kubectl logs -f pod/integration-test-${{ github.run_id }}
+          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+
+          kubectl delete pod integration-test-${{ github.run_id }} --ignore-not-found
+          kubectl delete configmap integration-test-proto-${{ github.run_id }} --ignore-not-found
+
+          exit $EXIT_CODE
+
+      - name: Rollback on failure
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
+        run: |
+          echo "Deployment or integration test failed — rolling back to previous version"
+          kubectl rollout undo deployment/currencyservice
+          kubectl rollout status deployment/currencyservice --timeout=120s
+
+      - name: Confirm final state
+        if: always()
+        run: |
+          kubectl get pods -l app=currencyservice
+          kubectl rollout history deployment/currencyservice
