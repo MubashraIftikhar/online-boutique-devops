@@ -112,6 +112,8 @@ jobs:
     if: github.event_name == 'push'
     runs-on: [self-hosted]
     steps:
+      - uses: actions/checkout@v4    # ADD THIS — needed so protos/demo.proto exists on the runner
+
       - name: Deploy new image
         run: |
           kubectl set image deployment/productcatalogservice \
@@ -126,13 +128,40 @@ jobs:
       - name: Run integration test against live service
         id: integration_test
         run: |
-          # grpcurl hits the real running pod via the in-cluster Service DNS name,
-          # calling the actual ListProducts RPC — a real functional check, not just "is it up"
-          kubectl run integration-test-${{ github.run_id }} \
-            --rm -i --restart=Never \
-            --image=fullstorydev/grpcurl:latest \
-            --command -- \
-            grpcurl -plaintext productcatalogservice:3550 hipstershop.ProductCatalogService/ListProducts
+          # Make the proto available to the test pod via a ConfigMap
+          kubectl create configmap integration-test-proto-${{ github.run_id }} \
+            --from-file=demo.proto=./protos/demo.proto \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          cat <<EOF > integration-test-pod.yaml
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: integration-test-${{ github.run_id }}
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: integration-test
+                image: fullstorydev/grpcurl:latest
+                command: ["grpcurl", "-plaintext", "-proto", "/protos/demo.proto", "productcatalogservice:3550", "hipstershop.ProductCatalogService/ListProducts"]
+                volumeMounts:
+                  - name: proto-vol
+                    mountPath: /protos
+            volumes:
+              - name: proto-vol
+                configMap:
+                  name: integration-test-proto-${{ github.run_id }}
+          EOF
+
+          kubectl apply -f integration-test-pod.yaml
+          kubectl wait --for=condition=Ready pod/integration-test-${{ github.run_id }} --timeout=60s || true
+          kubectl logs -f pod/integration-test-${{ github.run_id }}
+          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+
+          kubectl delete pod integration-test-${{ github.run_id }} --ignore-not-found
+          kubectl delete configmap integration-test-proto-${{ github.run_id }} --ignore-not-found
+
+          exit $EXIT_CODE
 
       - name: Rollback on failure
         if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
