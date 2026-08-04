@@ -106,3 +106,43 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/productcatalogservice:latest
           docker push ${{ steps.ecr.outputs.registry }}/productcatalogservice:${{ github.sha }}
           docker push ${{ steps.ecr.outputs.registry }}/productcatalogservice:latest
+  deploy:
+    name: Deploy to k3s
+    needs: build-and-scan
+    if: github.event_name == 'push'
+    runs-on: [self-hosted]
+    steps:
+      - name: Deploy new image
+        run: |
+          kubectl set image deployment/productcatalogservice \
+            server=532404261078.dkr.ecr.us-east-1.amazonaws.com/productcatalogservice:${{ github.sha }} \
+            --record
+
+      - name: Wait for rollout to complete
+        id: rollout
+        run: |
+          kubectl rollout status deployment/productcatalogservice --timeout=120s
+
+      - name: Run integration test against live service
+        id: integration_test
+        run: |
+          # grpcurl hits the real running pod via the in-cluster Service DNS name,
+          # calling the actual ListProducts RPC — a real functional check, not just "is it up"
+          kubectl run integration-test-${{ github.run_id }} \
+            --rm -i --restart=Never \
+            --image=fullstorydev/grpcurl:latest \
+            --command -- \
+            grpcurl -plaintext productcatalogservice:3550 hipstershop.ProductCatalogService/ListProducts
+
+      - name: Rollback on failure
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
+        run: |
+          echo "Deployment or integration test failed — rolling back to previous version"
+          kubectl rollout undo deployment/productcatalogservice
+          kubectl rollout status deployment/productcatalogservice --timeout=120s
+
+      - name: Confirm final state
+        if: always()
+        run: |
+          kubectl get pods -l app=productcatalogservice
+          kubectl rollout history deployment/productcatalogservice
