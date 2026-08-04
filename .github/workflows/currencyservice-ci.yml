@@ -1,113 +1,4 @@
-name: currencyservice CI
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/currencyservice/**'
-      - '.github/workflows/currencyservice-ci.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/currencyservice/**'
-
-jobs:
-  lint-and-test:
-    name: Install and syntax-check
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src/currencyservice
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install --only=production
-
-      # No test suite or ESLint config exists upstream for this service
-      # (package.json's "test" script is an unfilled placeholder). Running
-      # a syntax check as a baseline sanity gate instead.
-      - name: Syntax check
-        run: |
-          find . -maxdepth 1 -name "*.js" -exec node --check {} \;
-
-  codeql:
-    name: CodeQL analysis
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: javascript
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
-
-  build-and-scan:
-    name: Build image and scan
-    runs-on: ubuntu-latest
-    needs: [lint-and-test, codeql]
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker image
-        run: |
-          docker build -t currencyservice:${{ github.sha }} \
-            src/currencyservice
-      - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: currencyservice:${{ github.sha }}
-          severity: 'CRITICAL,HIGH'
-          exit-code: '0'
-          format: 'table'
-      - name: Configure AWS credentials
-        if: github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
-          aws-region: us-east-1
-      - name: Login to Amazon ECR
-        if: github.event_name == 'push'
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-      - name: Tag and push to ECR
-        if: github.event_name == 'push'
-        run: |
-          docker tag currencyservice:${{ github.sha }} \
-            ${{ steps.ecr.outputs.registry }}/currencyservice:${{ github.sha }}
-          docker tag currencyservice:${{ github.sha }} \
-            ${{ steps.ecr.outputs.registry }}/currencyservice:latest
-          docker push ${{ steps.ecr.outputs.registry }}/currencyservice:${{ github.sha }}
-          docker push ${{ steps.ecr.outputs.registry }}/currencyservice:latest
-
-  deploy:
-    name: Deploy to k3s
-    needs: build-and-scan
-    if: github.event_name == 'push'
-    runs-on: [self-hosted]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy new image
-        run: |
-          kubectl set image deployment/currencyservice \
-            server=532404261078.dkr.ecr.us-east-1.amazonaws.com/currencyservice:${{ github.sha }}
-
-      - name: Wait for rollout to complete
-        id: rollout
-        run: |
-          kubectl rollout status deployment/currencyservice --timeout=120s
-
-      - name: Run integration test against live service
+- name: Run integration test against live service
         id: integration_test
         run: |
           kubectl create configmap integration-test-proto-${{ github.run_id }} \
@@ -124,7 +15,7 @@ jobs:
             containers:
               - name: integration-test
                 image: fullstorydev/grpcurl:latest
-                command: ["grpcurl", "-plaintext", "-proto", "/protos/demo.proto", "currencyservice:7000", "hipstershop.CurrencyService/GetSupportedCurrencies"]
+                command: ["grpcurl", "-plaintext", "-import-path", "/protos", "-proto", "demo.proto", "currencyservice:7000", "hipstershop.CurrencyService/GetSupportedCurrencies"]
                 volumeMounts:
                   - name: proto-vol
                     mountPath: /protos
@@ -135,24 +26,30 @@ jobs:
           EOF
 
           kubectl apply -f integration-test-pod.yaml
-          kubectl wait --for=condition=Ready pod/integration-test-${{ github.run_id }} --timeout=60s || true
-          kubectl logs -f pod/integration-test-${{ github.run_id }}
-          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+
+          # Poll for a terminal phase instead of waiting on "Ready" — a
+          # run-to-completion pod never becomes Ready, it just finishes.
+          PHASE=""
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          echo "--- test pod logs ---"
+          kubectl logs pod/integration-test-${{ github.run_id }} || true
+
+          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "")
 
           kubectl delete pod integration-test-${{ github.run_id }} --ignore-not-found
           kubectl delete configmap integration-test-proto-${{ github.run_id }} --ignore-not-found
 
-          exit $EXIT_CODE
+          if [ -z "$EXIT_CODE" ]; then
+            echo "Test pod never reached a terminal state within timeout — treating as failure"
+            exit 1
+          fi
 
-      - name: Rollback on failure
-        if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
-        run: |
-          echo "Deployment or integration test failed — rolling back to previous version"
-          kubectl rollout undo deployment/currencyservice
-          kubectl rollout status deployment/currencyservice --timeout=120s
-
-      - name: Confirm final state
-        if: always()
-        run: |
-          kubectl get pods -l app=currencyservice
-          kubectl rollout history deployment/currencyservice
+          exit "$EXIT_CODE"
