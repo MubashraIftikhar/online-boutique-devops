@@ -102,3 +102,4 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/shippingservice:latest
           docker push ${{ steps.ecr.outputs.registry }}/shippingservice:${{ github.sha }}
           docker push ${{ steps.ecr.outputs.registry }}/shippingservice:latest
+# trigger

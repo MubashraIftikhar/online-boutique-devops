@@ -175,3 +175,4 @@ jobs:
         run: |
           kubectl get pods -l app=currencyservice
           kubectl rollout history deployment/currencyservice
+# trigger
