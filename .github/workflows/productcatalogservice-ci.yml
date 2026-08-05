@@ -2,12 +2,12 @@ name: productcatalogservice CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev, uat, prod]
     paths:
       - 'src/productcatalogservice/**'
       - '.github/workflows/productcatalogservice-ci.yml'
   pull_request:
-    branches: [main]
+    branches: [dev, uat, prod]
     paths:
       - 'src/productcatalogservice/**'
 
@@ -109,7 +109,7 @@ jobs:
   deploy:
     name: Deploy to k3s
     needs: build-and-scan
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
     runs-on: [self-hosted]
     steps:
       - uses: actions/checkout@v4    # ADD THIS — needed so protos/demo.proto exists on the runner
