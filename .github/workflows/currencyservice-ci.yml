@@ -2,12 +2,12 @@ name: currencyservice CI
 
 on:
   push:
-    branches: [dev, uat, prod]
+    branches: [main]
     paths:
       - 'src/currencyservice/**'
       - '.github/workflows/currencyservice-ci.yml'
   pull_request:
-    branches: [dev, uat, prod]
+    branches: [main]
     paths:
       - 'src/currencyservice/**'
 
@@ -92,7 +92,7 @@ jobs:
   deploy:
     name: Deploy to k3s
     needs: build-and-scan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
+    if: github.event_name == 'push'
     runs-on: [self-hosted]
     steps:
       - uses: actions/checkout@v4
