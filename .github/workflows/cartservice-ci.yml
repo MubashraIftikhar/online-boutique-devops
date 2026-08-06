@@ -122,7 +122,7 @@ jobs:
             containers:
               - name: integration-test
                 image: fullstorydev/grpcurl:latest
-                command: ["grpcurl", "-plaintext", "-import-path", "/protos", "-proto", "demo.proto", "cartservice:7070", "hipstershop.CartService/GetCart", "-d", "{\"user_id\":\"ci-smoke-test\"}"]
+                command: ["grpcurl", "-plaintext", "-d", "{\"user_id\":\"ci-smoke-test\"}", "-import-path", "/protos", "-proto", "demo.proto", "cartservice:7070", "hipstershop.CartService/GetCart"]
                 volumeMounts:
                   - name: proto-vol
                     mountPath: /protos
