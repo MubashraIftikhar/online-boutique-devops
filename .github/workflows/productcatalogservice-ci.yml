@@ -175,4 +175,4 @@ jobs:
         run: |
           kubectl get pods -l app=productcatalogservice
           kubectl rollout history deployment/productcatalogservice
-# trigger
+
