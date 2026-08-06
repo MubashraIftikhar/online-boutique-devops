@@ -1,12 +1,12 @@
 name: shippingservice CI
 on:
   push:
-    branches: [main]
+    branches: [dev, uat, prod]
     paths:
       - 'src/shippingservice/**'
       - '.github/workflows/shippingservice-ci.yml'
   pull_request:
-    branches: [main]
+    branches: [dev, uat, prod]
     paths:
       - 'src/shippingservice/**'
 
