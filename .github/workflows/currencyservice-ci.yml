@@ -1,3 +1,4 @@
+#target
 name: currencyservice CI
 
 on:
