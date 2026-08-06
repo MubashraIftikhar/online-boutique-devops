@@ -67,14 +67,6 @@ jobs:
           exit-code: '0'
           format: 'table'
 
-      - name: Debug GitHub Context
-        run: |
-           echo "Repository: ${{ github.repository }}"
-           echo "Ref: ${{ github.ref }}"
-           echo "Event: ${{ github.event_name }}"
-
-      # ECR push now restricted to the prod branch only — dev/uat pushes
-      # still build and scan (fast feedback), but never touch AWS at all.
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         uses: aws-actions/configure-aws-credentials@v4
