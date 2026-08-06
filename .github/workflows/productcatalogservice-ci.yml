@@ -86,19 +86,19 @@ jobs:
           format: 'table'
 
       - name: Configure AWS credentials
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
           aws-region: us-east-1
       
       - name: Login to Amazon ECR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Tag and push to ECR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         run: |
           docker tag productcatalogservice:${{ github.sha }} \
             ${{ steps.ecr.outputs.registry }}/productcatalogservice:${{ github.sha }}

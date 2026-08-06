@@ -72,18 +72,21 @@ jobs:
            echo "Repository: ${{ github.repository }}"
            echo "Ref: ${{ github.ref }}"
            echo "Event: ${{ github.event_name }}"
+
+      # ECR push now restricted to the prod branch only — dev/uat pushes
+      # still build and scan (fast feedback), but never touch AWS at all.
       - name: Configure AWS credentials
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::532404261078:role/github-actions-ecr
           aws-region: us-east-1
       - name: Login to Amazon ECR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
       - name: Tag and push to ECR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
         run: |
           docker tag cartservice:${{ github.sha }} \
             ${{ steps.ecr.outputs.registry }}/cartservice:${{ github.sha }}
@@ -127,7 +130,7 @@ jobs:
             containers:
               - name: integration-test
                 image: fullstorydev/grpcurl:latest
-                command: ["grpcurl", "-plaintext", "-proto", "/protos/demo.proto", "cartservice:7070", "hipstershop.CartService/GetCart", "-d", "{\"user_id\":\"ci-smoke-test\"}"]
+                command: ["grpcurl", "-plaintext", "-import-path", "/protos", "-proto", "demo.proto", "cartservice:7070", "hipstershop.CartService/GetCart", "-d", "{\"user_id\":\"ci-smoke-test\"}"]
                 volumeMounts:
                   - name: proto-vol
                     mountPath: /protos
@@ -138,14 +141,33 @@ jobs:
           EOF
 
           kubectl apply -f integration-test-pod.yaml
-          kubectl wait --for=condition=Ready pod/integration-test-${{ github.run_id }} --timeout=60s || true
-          kubectl logs -f pod/integration-test-${{ github.run_id }}
-          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+
+          # Poll for a terminal phase instead of waiting on "Ready" — a
+          # run-to-completion pod never becomes Ready, it just finishes.
+          PHASE=""
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get pod integration-test-${{ github.run_id }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          echo "--- test pod logs ---"
+          kubectl logs pod/integration-test-${{ github.run_id }} || true
+
+          EXIT_CODE=$(kubectl get pod integration-test-${{ github.run_id }} \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "")
 
           kubectl delete pod integration-test-${{ github.run_id }} --ignore-not-found
           kubectl delete configmap integration-test-proto-${{ github.run_id }} --ignore-not-found
 
-          exit $EXIT_CODE
+          if [ -z "$EXIT_CODE" ]; then
+            echo "Test pod never reached a terminal state within timeout — treating as failure"
+            exit 1
+          fi
+
+          exit "$EXIT_CODE"
 
       - name: Rollback on failure
         if: failure() && (steps.rollout.outcome == 'failure' || steps.integration_test.outcome == 'failure')
@@ -159,4 +181,3 @@ jobs:
         run: |
           kubectl get pods -l app=cartservice
           kubectl rollout history deployment/cartservice
-# trigger
