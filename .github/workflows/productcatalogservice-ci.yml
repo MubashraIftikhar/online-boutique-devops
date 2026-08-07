@@ -114,9 +114,8 @@ jobs:
 
       - name: Deploy new image
         run: |
-          kubectl set image deployment/productcatalogservice \
-            server=532404261078.dkr.ecr.us-east-1.amazonaws.com/productcatalogservice:${{ github.sha }} \
-            --record
+          sed -i "s|image: .*productcatalogservice.*|image: 532404261078.dkr.ecr.us-east-1.amazonaws.com/productcatalogservice:${{ github.sha }}|" kubernetes-manifests/productcatalogservice.yaml
+          kubectl apply -f kubernetes-manifests/productcatalogservice.yaml
 
       - name: Wait for rollout to complete
         id: rollout
