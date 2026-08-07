@@ -32,9 +32,9 @@ jobs:
           version: v2.12.2
 
       - name: Run tests with coverage
-        run: go test ./... -v -coverprofile=coverage.out
+        run: go test $(go list ./... | grep -v /genproto) -v -coverprofile=coverage.out
       - name: Show coverage summary
-        run: go tool cover -func=coverage.out | grep -v "/genproto/"
+        run: go tool cover -func=coverage.out
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
